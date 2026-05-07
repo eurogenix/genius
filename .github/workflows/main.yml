@@ -140,8 +140,7 @@ jobs:
             --brave \
             --incognito \
             --do-not-track \
-            --xvfb \
-            --screenshot
+            --xvfb 
         shell: bash
 
       # ─── Artifacts ──────────────────────────────────────────────────────────
