@@ -133,17 +133,6 @@ jobs:
           seleniumbase install chromedriver
         shell: bash
 
-      # ─── Display (Xvfb) ─────────────────────────────────────────────────────
-      - name: Start virtual display
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            xvfb libxi6 libgconf-2-4
-          Xvfb :99 -screen 0 1920x1080x24 &
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
-          sleep 2
-          echo "✅ Virtual display started on :99"
-        shell: bash
-
       # ─── Main Script ────────────────────────────────────────────────────────
       - name: Run main script
         run: |
