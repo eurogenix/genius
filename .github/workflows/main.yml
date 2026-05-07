@@ -1,0 +1,177 @@
+name: gghype
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Run on ${{ matrix.os }} | Python ${{ matrix.python-version }}
+    env:
+      PY_COLORS: "1"
+      LANG: "en_US.UTF-8"
+      LC_ALL: "en_US.UTF-8"
+
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.13"]
+
+    runs-on: ${{ matrix.os }}
+
+    timeout-minutes: 30
+
+    steps:
+      # ─── Checkout ───────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ─── Python Setup ───────────────────────────────────────────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      # ─── Locale ─────────────────────────────────────────────────────────────
+      - name: Configure locale
+        run: |
+          sudo apt-get install -y --no-install-recommends tzdata locales
+          sudo locale-gen en_US.UTF-8
+          sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+          echo "LANG=en_US.UTF-8"   >> "$GITHUB_ENV"
+          echo "LC_ALL=en_US.UTF-8" >> "$GITHUB_ENV"
+          locale -a
+        shell: bash
+
+      # ─── Cloudflare WARP ────────────────────────────────────────────────────
+      - name: Install Cloudflare WARP
+        run: |
+          echo "Installing Cloudflare WARP..."
+          sudo apt-get update -y
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor \
+                 --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] \
+            https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends cloudflare-warp
+        shell: bash
+
+      - name: Connect to WARP
+        run: |
+          echo "Connecting to Cloudflare WARP..."
+          sudo warp-cli --accept-tos registration new
+          sudo warp-cli --accept-tos mode warp+doh
+          sudo warp-cli --accept-tos connect
+          sleep 8
+        shell: bash
+
+      - name: Verify WARP connection
+        run: |
+          echo "Verifying WARP connection..."
+          for i in {1..5}; do
+            STATUS=$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "warp=")
+            echo "Attempt $i: $STATUS"
+            if echo "$STATUS" | grep -q "warp=on"; then
+              echo "✅ WARP is active!"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "❌ WARP connection could not be verified."
+          exit 1
+        shell: bash
+
+      # ─── Brave Browser ──────────────────────────────────────────────────────
+      - name: Install Brave Browser
+        run: |
+          echo "Installing Brave Browser..."
+          sudo apt-get install -y --no-install-recommends \
+            apt-transport-https curl gnupg
+
+          # Add Brave GPG key
+          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+
+          # Add Brave repository
+          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] \
+            https://brave-browser-apt-release.s3.brave.com/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends brave-browser
+
+          # Confirm installation
+          brave-browser --version
+          echo "BRAVE_BINARY=$(which brave-browser)" >> "$GITHUB_ENV"
+          echo "✅ Brave Browser installed successfully!"
+        shell: bash
+
+      # ─── Python Dependencies ─────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install --upgrade \
+            seleniumbase \
+            pyautogui \
+            pymongo \
+            python-xlib
+        shell: bash
+
+      # ─── Drivers ────────────────────────────────────────────────────────────
+      - name: Install chromedriver
+        run: |
+          seleniumbase install chromedriver
+        shell: bash
+
+      # ─── Display (Xvfb) ─────────────────────────────────────────────────────
+      - name: Start virtual display
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libxi6 libgconf-2-4
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          sleep 2
+          echo "✅ Virtual display started on :99"
+        shell: bash
+
+      # ─── Main Script ────────────────────────────────────────────────────────
+      - name: Run main script
+        run: |
+          python main.py \
+            --brave \
+            --incognito \
+            --do-not-track \
+            --xvfb \
+            --screenshot
+        shell: bash
+
+      # ─── Artifacts ──────────────────────────────────────────────────────────
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seleniumbase-screenshots-${{ github.run_id }}
+          path: |
+            ./latest_logs/
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ github.run_id }}
+          path: |
+            ./latest_logs/
+            /tmp/*.log
+          retention-days: 1
